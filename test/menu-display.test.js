@@ -535,7 +535,7 @@ describe("menu new session action", () => {
     assert.ok(Array.isArray(newSession.submenu), "New Session should be a submenu");
     assert.deepStrictEqual(
       newSession.submenu.map((item) => item.label),
-      ["Select Folder...", "Home Directory"],
+      ["Select Folder...", undefined, "my_claude_projects (E:\\)", "Home Directory"],
     );
   });
 

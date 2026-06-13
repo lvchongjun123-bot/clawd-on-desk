@@ -2732,6 +2732,38 @@ const _menuCtx = {
     const modes = ["normal", "dangerous", "continue"];
     await runLaunchClaudeSession(t, modes[mode.response]);
   },
+  newSessionWithPresetPath: async (t, folder) => {
+    const parent = win && !win.isDestroyed() ? win : null;
+    const mode = await electronDialog.showMessageBox(parent, {
+      type: "question",
+      buttons: [t("newSessionNormal"), t("newSessionDangerous"), t("newSessionContinue"), t("newSessionResume"), t("dismiss")],
+      defaultId: 0,
+      cancelId: 4,
+      title: t("newSession"),
+      message: t("newSession"),
+      detail: folder,
+    });
+    if (mode.response === 4) return;
+    if (mode.response === 3) {
+      const sessionId = await showResumeInput(t);
+      if (!sessionId) return;
+      const resumeMode = await electronDialog.showMessageBox(parent, {
+        type: "question",
+        buttons: [t("modeNormal"), t("modeDangerous"), t("dismiss")],
+        defaultId: 0,
+        cancelId: 2,
+        title: t("newSessionResume"),
+        message: sessionId,
+      });
+      if (resumeMode.response === 2) return;
+      if (resumeMode.response === 1 && !(await confirmDangerousMode(t))) return;
+      await runLaunchClaudeSession(t, resumeMode.response === 1 ? "resume-dangerous" : "resume", folder, sessionId);
+      return;
+    }
+    if (mode.response === 1 && !(await confirmDangerousMode(t))) return;
+    const modes = ["normal", "dangerous", "continue"];
+    await runLaunchClaudeSession(t, modes[mode.response], folder);
+  },
   // The settings controller is the only writer of persisted prefs. Toggle
   // setters above route through it; resize/sendToDisplay use
   // flushRuntimeStateToPrefs to capture window bounds after movement.

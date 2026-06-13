@@ -395,6 +395,15 @@ module.exports = function initMenu(ctx) {
               if (typeof ctx.newSessionWithFolder === "function") ctx.newSessionWithFolder(t);
             },
           },
+          { type: "separator" },
+          {
+            label: t("newSessionPresetPath") + " (E:\\)",
+            click: () => {
+              if (typeof ctx.newSessionWithPresetPath === "function") {
+                ctx.newSessionWithPresetPath(t, "E:\\my_claude_projects");
+              }
+            },
+          },
           {
             label: t("newSessionHomeDir"),
             click: () => {

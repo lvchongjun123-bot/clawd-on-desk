@@ -171,7 +171,7 @@ function buildClaudeArgs(mode, sessionId) {
 // only user-entered arg is the resume session ID, which buildClaudeArgs
 // validates before this point. The argv-array candidates (wt.exe `--`) need no
 // quoting — the OS passes argv verbatim without a shell.
-function buildTerminalCandidates(claudePath, claudeArgs, plat = platform()) {
+function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), cwd) {
   if (plat === "win32") {
     // cmd.exe /k: command paths with spaces must use cmd's special
     // `""C:\Program Files\...\claude.cmd" args"` form. Plain quoteForCmd on
@@ -182,10 +182,10 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform()) {
     const cmdLine = buildCmdLaunchCommand(claudePath, claudeArgs);
     // powershell.exe -Command: call operator `&` + single-quoted PS strings.
     const psCmd = "& " + [claudePath, ...claudeArgs].map(quoteForPowerShell).join(" ");
-    // wt.exe runs its commandline through CreateProcess (no shell), which cannot
-    // execute an npm .cmd/.bat shim or an extensionless POSIX script directly —
-    // that raises ERROR_BAD_EXE_FORMAT (0x800700c1). Route the tab through
-    // cmd.exe (a real PE), which resolves and runs the shim.
+    // wt.exe needs --startingDirectory (-d) to respect cwd; the spawn() cwd
+    // only sets the wt.exe process directory, not the tab's working directory.
+    const wtArgs = ["--", "cmd.exe", "/d", "/v:off", "/k", "call", quoteCmdExecutablePath(claudePath), ...claudeArgs];
+    if (cwd) wtArgs.unshift("-d", cwd);
     //
     // Two quoting hazards, both neutralized by the `call "<path>"` prefix:
     //  - Windows Terminal re-tokenizes the args after `--` and re-quotes only
@@ -200,7 +200,7 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform()) {
     return [
       {
         bin: "wt.exe",
-        args: ["--", "cmd.exe", "/d", "/v:off", "/k", "call", quoteCmdExecutablePath(claudePath), ...claudeArgs],
+        args: wtArgs,
         extraOpts: { shell: false, windowsVerbatimArguments: true },
       },
       {
@@ -245,7 +245,7 @@ async function launchClaudeSession(mode, cwd, sessionId, deps = {}) {
   const workDir = cwd || homedir();
   const opts = { detached: true, stdio: "ignore", windowsHide: false, cwd: workDir };
 
-  const candidates = buildTerminalCandidates(claudePath, claudeArgs, plat);
+  const candidates = buildTerminalCandidates(claudePath, claudeArgs, plat, cwd);
   let lastError = null;
   for (const candidate of candidates) {
     const result = await _tryLaunch(candidate.bin, candidate.args, {
