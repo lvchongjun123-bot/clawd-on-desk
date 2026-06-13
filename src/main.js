@@ -47,6 +47,7 @@ const {
 const { keepOutOfTaskbar } = require("./taskbar");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
+const { createFullscreenDetector } = require("./fullscreen-detector");
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
@@ -239,6 +240,9 @@ let hardwareBuddyStatus = null;
 let hardwareBuddyTestApprovalPromise = null;
 let lastHardwareBuddyStatusLogKey = "";
 let unsubscribeHardwareBuddySettings = null;
+let fullscreenDetector = null;
+let autoHiddenByFullscreen = false;
+let fullscreenMuted = false;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -816,6 +820,8 @@ function prepManualPetVisibility() {
   }
 }
 function togglePetVisibility() {
+  autoHiddenByFullscreen = false; // user explicitly toggled — don't auto-restore
+  fullscreenMuted = false;         // and unmute
   prepManualPetVisibility();
   return petWindowRuntime.togglePetVisibility();
 }
@@ -918,7 +924,7 @@ let lastSoundTime = 0;
 const SOUND_COOLDOWN_MS = 10000;
 
 function playSound(name) {
-  if (soundMuted || doNotDisturb) return;
+  if (soundMuted || doNotDisturb || fullscreenMuted) return;
   const now = Date.now();
   if (now - lastSoundTime < SOUND_COOLDOWN_MS) return;
   const url = themeRuntime.getSoundUrl(name);
@@ -3486,6 +3492,32 @@ if (!gotTheLock) {
       macHideController.start();
       app.on("activate", () => { if (macHideController) macHideController.onActivate(); });
     }
+    // Windows: auto-hide pet when a fullscreen application (game, video) is active
+    if (isWin) {
+      fullscreenDetector = createFullscreenDetector({
+        scriptDir: app.getPath("userData"),
+        pollIntervalMs: 100,
+        onStateChange: (isFullscreen) => {
+          if (isFullscreen) {
+            // Only hide if the feature is enabled
+            if (!_settingsController.get("autoHideFullscreen")) return;
+            fullscreenMuted = true;
+            if (!petWindowRuntime.isPetHidden()) {
+              petWindowRuntime.setPetHidden(true);
+              autoHiddenByFullscreen = true;
+            }
+          } else {
+            // Always restore if we auto-hid — even if user later disabled the setting
+            if (autoHiddenByFullscreen) {
+              autoHiddenByFullscreen = false;
+              petWindowRuntime.setPetHidden(false);
+            }
+            fullscreenMuted = false;
+          }
+        },
+      });
+      fullscreenDetector.start();
+    }
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();
     }
@@ -3550,6 +3582,7 @@ if (!gotTheLock) {
     _sessionHud.cleanup();
     agentRuntime.cleanup();
     topmostRuntime.cleanup();
+    if (fullscreenDetector) fullscreenDetector.stop();
     themeRuntime.cleanup();
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();

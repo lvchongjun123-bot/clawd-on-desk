@@ -194,6 +194,11 @@ const SCHEMA = {
   // proportional pixel-size recomputation. The pet keeps its current
   // window size; the size slider still works (per-display proportional).
   keepSizeAcrossDisplays: { type: "boolean", default: false },
+  // When true (default), automatically hide the pet when a fullscreen
+  // application (game, video player, presentation) is detected on the
+  // foreground. Restore the pet when the fullscreen app is minimized or
+  // closed. Windows-only; macOS handles fullscreen natively via Spaces.
+  autoHideFullscreen: { type: "boolean", default: true },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the
