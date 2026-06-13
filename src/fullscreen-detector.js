@@ -2,9 +2,10 @@
 
 // ── Windows fullscreen application detector ──
 //
-// Compiles a tiny native C# Win32 console exe (once), then polls it with
-// Node's execFileSync (no shell).  Native startup + P/Invoke ≈ 20-40 ms
-// versus 400-600 ms for the PowerShell + Add-Type path.
+// Compiles a tiny native C# Win32 console daemon (once), spawns it as a
+// persistent background process, and reads "True\n"/"False\n" lines from
+// stdout every ~100 ms.  The daemon polls GetForegroundWindow() internally
+// so no per-tick process creation → no foreground-stealing.
 //
 // macOS is a no-op: Clawd already uses visibleOnFullScreen + collection behavior.
 //
@@ -12,14 +13,17 @@
 //   createFullscreenDetector({ pollIntervalMs, scriptDir, onStateChange })
 //     → { start(), stop(), getState(), onStateChange(fn) }
 
-const { execFileSync, execSync, spawnSync } = require("child_process");
+const { execSync, spawnSync, spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-// ── C# source (compact, single file, no external refs beyond System.dll) ──
+// ── C# daemon source ──
+// Continuously polls GetForegroundWindow() → checks if fullscreen
+// (excluding desktop shell windows Progman / WorkerW).
 const CS_SOURCE = [
-  'using System;using System.Runtime.InteropServices;',
+  'using System;using System.Runtime.InteropServices;using System.Text;using System.Threading;',
   'class FSC{',
+  '[DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder s,int n);',
   '[DllImport("user32.dll")]static extern IntPtr GetForegroundWindow();',
   '[DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out RECT r);',
   '[DllImport("user32.dll")]static extern IntPtr MonitorFromWindow(IntPtr h,uint f);',
@@ -27,13 +31,21 @@ const CS_SOURCE = [
   'struct RECT{public int L,T,R,B;}',
   'struct MONITORINFO{public int S;public RECT M,W;public uint F;}',
   'const uint MDT=2;',
-  'static int Main(){',
-  'var h=GetForegroundWindow();if(h==IntPtr.Zero){Console.WriteLine("False");return 0;}',
+  'static bool IsFullscreen(){',
+  'var h=GetForegroundWindow();if(h==IntPtr.Zero)return false;',
+  'var sb=new StringBuilder(256);GetClassName(h,sb,256);',
+  'string cn=sb.ToString();if(cn=="Progman"||cn=="WorkerW")return false;',
   'var mi=new MONITORINFO{S=Marshal.SizeOf(typeof(MONITORINFO))};',
-  'var m=MonitorFromWindow(h,MDT);if(m==IntPtr.Zero||!GetMonitorInfo(m,ref mi)){Console.WriteLine("False");return 0;}',
-  'RECT r;if(!GetWindowRect(h,out r)){Console.WriteLine("False");return 0;}',
-  'bool f=r.L<=mi.M.L+8&&r.T<=mi.M.T+8&&r.R>=mi.M.R-8&&r.B>=mi.M.B-60;',
-  'Console.WriteLine(f?"True":"False");return 0;',
+  'var m=MonitorFromWindow(h,MDT);if(m==IntPtr.Zero||!GetMonitorInfo(m,ref mi))return false;',
+  'RECT r;if(!GetWindowRect(h,out r))return false;',
+  'return r.L<=mi.M.L+8&&r.T<=mi.M.T+8&&r.R>=mi.M.R-8&&r.B>=mi.M.B-60;',
+  '}',
+  'static int Main(){',
+  'while(true){',
+  'Console.WriteLine(IsFullscreen()?"True":"False");',
+  'Console.Out.Flush();',
+  'Thread.Sleep(100);',
+  '}',
   '}',
   '}',
 ].join('\n');
@@ -42,9 +54,10 @@ const CS_SOURCE = [
 const PS_SCRIPT = [
   '$ProgressPreference="SilentlyContinue"',
   '$c=@\'',
-  'using System;using System.Runtime.InteropServices;',
+  'using System;using System.Runtime.InteropServices;using System.Text;',
   'public class FSD{',
   '[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();',
+  '[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetClassName(IntPtr h,StringBuilder s,int n);',
   '[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out RECT r);',
   '[DllImport("user32.dll")]public static extern IntPtr MonitorFromWindow(IntPtr h,uint f);',
   '[DllImport("user32.dll")]public static extern bool GetMonitorInfo(IntPtr m,ref MONITORINFO i);',
@@ -53,6 +66,8 @@ const PS_SCRIPT = [
   'public const uint MDT=2;',
   'public static bool Chk(){',
   'var h=GetForegroundWindow();if(h==IntPtr.Zero)return false;',
+  'var sb=new StringBuilder(256);GetClassName(h,sb,256);',
+  'string cn=sb.ToString();if(cn=="Progman"||cn=="WorkerW")return false;',
   'var mi=new MONITORINFO{S=Marshal.SizeOf(typeof(MONITORINFO))};',
   'var m=MonitorFromWindow(h,MDT);if(m==IntPtr.Zero||!GetMonitorInfo(m,ref mi))return false;',
   'RECT r;if(!GetWindowRect(h,out r))return false;',
@@ -83,21 +98,11 @@ function compileExe(scriptDir) {
 
   const csPath = path.join(scriptDir, "clawd-fs-check.cs");
   const exePath = path.join(scriptDir, "clawd-fs-check.exe");
-  const cscExists = fs.existsSync(CSC_PATH);
 
-  if (!cscExists) return null;
+  if (!fs.existsSync(CSC_PATH)) return null;
 
-  // If a working exe already exists, use it directly (skip recompilation)
-  if (fs.existsSync(exePath)) {
-    try {
-      const out = execFileSync(exePath, [], { timeout: 3000, windowsHide: true, encoding: "utf8" });
-      if (out.trim() === "True" || out.trim() === "False") return exePath;
-    } catch (_) { /* exe broken, recompile below */ }
-  }
-
-  // Compile fresh
+  // Write current source and compile fresh (fast, ~200ms)
   try {
-    fs.mkdirSync(scriptDir, { recursive: true });
     fs.writeFileSync(csPath, CS_SOURCE, "utf8");
     const result = spawnSync(CSC_PATH, [
       "/nologo",
@@ -110,14 +115,11 @@ function compileExe(scriptDir) {
       try { fs.unlinkSync(exePath); } catch (_) {}
       return null;
     }
-    // Quick smoke test
-    const out = execFileSync(exePath, [], { timeout: 3000, windowsHide: true, encoding: "utf8" });
-    if (out.trim() === "True" || out.trim() === "False") return exePath;
-    try { fs.unlinkSync(exePath); } catch (_) {}
+    return exePath;
   } catch (_) {
     try { fs.unlinkSync(exePath); } catch (_) {}
+    return null;
   }
-  return null;
 }
 
 // ── One-shot check (exported for ad-hoc use & testing) ──
@@ -137,7 +139,7 @@ function isForegroundFullscreen(deps) {
   }
 }
 
-// ── Polling detector ──
+// ── Polling detector (daemon-based) ──
 
 function createFullscreenDetector(options) {
   if (typeof options !== "object" || !options) options = {};
@@ -159,47 +161,73 @@ function createFullscreenDetector(options) {
     };
   }
 
-  let timer = null;
+  let daemonProc = null;   // spawned daemon process (fast path)
+  let psEncoded = null;    // slow path: PowerShell base64 (compiled once)
+  let timer = null;        // used only for PowerShell slow path
   let running = false;
   let reportedState = false;
-  let exePath = null;        // fast path: compiled native exe
-  let psEncoded = null;      // slow path: PowerShell base64 (compiled once)
 
   const listeners = new Set();
   if (typeof initialListener === "function") listeners.add(initialListener);
 
   function fireStateChange(state) {
-    if (reportedState === state) return; // no change
+    if (reportedState === state) return;
     reportedState = state;
     for (const fn of listeners) {
       try { fn(state); } catch (_) { /* don't let one listener break others */ }
     }
   }
 
-  function checkSync() {
+  // PowerShell slow path: one-shot execSync every pollIntervalMs
+  function tickPs() {
+    if (!running) return;
     try {
-      let out;
-      if (exePath) {
-        // Fast path: native exe, no shell overhead (~30-40ms)
-        out = execFileSync(exePath, [], { timeout: 2000, windowsHide: true, encoding: "utf8" });
-      } else if (psEncoded) {
-        out = execSync(
-          `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${psEncoded}`,
-          { timeout: 4000, windowsHide: true, encoding: "utf8" },
-        );
-      } else {
-        return false;
-      }
-      return out.trim() === "True";
+      const out = execSync(
+        `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${psEncoded}`,
+        { timeout: 4000, windowsHide: true, encoding: "utf8" },
+      );
+      const isFullscreen = out.trim() === "True";
+      fireStateChange(isFullscreen);
     } catch (_) {
-      return false;
+      // silently ignore
     }
   }
 
-  function tick() {
-    if (!running) return;
-    const isFullscreen = checkSync();
-    fireStateChange(isFullscreen);
+  function startDaemon(exePath) {
+    const proc = spawn(exePath, [], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+
+    let buf = "";
+    proc.stdout.on("data", (data) => {
+      if (!running) return;
+      buf += data.toString();
+      const lines = buf.split("\n");
+      buf = lines.pop(); // keep incomplete line
+      for (const line of lines) {
+        const t = line.trim();
+        if (t === "True" || t === "False") {
+          fireStateChange(t === "True");
+        }
+      }
+    });
+
+    proc.on("error", () => {
+      // Daemon died unexpectedly — fall back to PowerShell
+      daemonProc = null;
+      if (running) {
+        psEncoded = encodeForPowerShell(PS_SCRIPT);
+        tickPs();
+        timer = setInterval(tickPs, pollIntervalMs);
+      }
+    });
+
+    proc.on("close", () => {
+      daemonProc = null;
+    });
+
+    daemonProc = proc;
   }
 
   function start() {
@@ -208,20 +236,24 @@ function createFullscreenDetector(options) {
     running = true;
     reportedState = false;
 
-    // Try to compile native exe for fast path (one-time)
-    exePath = compileExe(scriptDir);
-    if (!exePath) {
-      // Fallback: pre-encode PowerShell script so we don't encode each tick
+    // Try to compile native daemon for fast path
+    const exePath = compileExe(scriptDir);
+    if (exePath) {
+      startDaemon(exePath);
+    } else {
+      // Fallback: PowerShell slow path
       psEncoded = encodeForPowerShell(PS_SCRIPT);
+      tickPs();
+      timer = setInterval(tickPs, pollIntervalMs);
     }
-
-    // Immediate first check
-    tick();
-    timer = setInterval(tick, pollIntervalMs);
   }
 
   function stop() {
     running = false;
+    if (daemonProc) {
+      try { daemonProc.kill(); } catch (_) {}
+      daemonProc = null;
+    }
     if (timer) {
       clearInterval(timer);
       timer = null;
