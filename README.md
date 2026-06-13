@@ -33,6 +33,31 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 
 > Supports Windows 11, macOS, and Ubuntu/Linux. Windows releases provide separate x64 and ARM64 installers. Source builds require Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **opencode**, **Pi**, **OpenClaw**, **Hermes Agent**, and **Qoder**.
 
+---
+
+## 🛠️ 本 Fork 新增功能 / Fork Enhancements
+
+> **致谢**：本项目 Fork 自 [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk)，感谢原作者 [@rullerzhou-afk](https://github.com/rullerzhou-afk) 及所有贡献者的出色工作。
+
+本 Fork 在原项目基础上增加了以下实用功能：
+
+### 右键菜单：预设路径一键启动终端
+- **新增菜单项**：右键 → New Session → `my_claude_projects (E:\)`，一键在 `E:\my_claude_projects` 目录下启动 Claude Code 终端会话
+- **完整模式支持**：与「选择文件夹」功能一致，支持 Normal / Dangerous (跳过权限) / Continue (继续上次) / Resume (恢复指定会话) 四种启动模式
+- **5 语言翻译**：预设路径标签已同步更新英文、简体中文、繁体中文、韩文、日文 5 种语言
+
+### Bug 修复：Windows Terminal 工作目录定位
+- **问题**：`wt.exe` 新建标签页时不响应 `spawn()` 的 `cwd` 参数，导致终端始终在 `C:\Users\Dell` 打开，而非指定的项目目录
+- **根因**：Windows Terminal 以独立窗口方式运行时，其子标签页的工作目录由 `-d` 参数控制，而非 Node.js 进程的当前目录
+- **修复**：在 `buildTerminalCandidates()` 中为 `wt.exe` 候选路径显式添加 `-d <工作目录>` 参数
+- **影响范围**：该修复惠及所有 New Session 启动路径（选择文件夹、预设路径、主目录）
+
+### 其他优化
+- 默认关闭 Claude Code 及其子代理的权限审批弹窗（`permissionsEnabled: false`），权限确认回归各 Agent 原生终端流程
+- 修复 Windows 开机自启 VBS 脚本的编码兼容性问题（UTF-8 → ANSI/GBK）
+
+---
+
 ## Features
 
 ### Multi-Agent Support
